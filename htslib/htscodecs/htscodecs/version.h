@@ -1,0 +1,1 @@
+#define HTSCODECS_VERSION_TEXT "3.0.3-dirty"

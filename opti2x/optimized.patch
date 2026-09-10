@@ -1,0 +1,495 @@
+diff -ruN a/bundle.h b/bundle.h
+--- a/bundle.h	2026-09-09 20:18:05.213989947 +0000
++++ b/bundle.h	2026-09-09 20:46:47.135894491 +0000
+@@ -423,6 +423,89 @@
+  }
+ };
+ 
++// Structured mate-pairing key (name + start + hi) with cached hash.
++// Matches former string key identity: name + '-' + start + '.=' + hi
++struct MateKey {
++	const char* name;
++	int start;
++	int hi;
++	uint64_t hash;
++};
++
++struct MateKeyHash {
++	uint64_t operator()(const MateKey& k) const { return k.hash; }
++};
++
++struct MateKeyEq {
++	bool operator()(const MateKey& a, const MateKey& b) const {
++		return a.start==b.start && a.hi==b.hi && strcmp(a.name, b.name)==0;
++	}
++};
++
++static inline uint64_t mate_key_hash(const char* name, int start, int hi) {
++	size_t len = strlen(name);
++	uint64_t h = wyhash(name, len, 0, _wyp);
++	uint64_t mix[2] = { (uint64_t)(uint32_t)start, (uint64_t)(uint32_t)hi };
++	return wyhash(mix, sizeof(mix), h, _wyp);
++}
++
++static inline MateKey make_mate_key(const char* name, int start, int hi) {
++	MateKey k;
++	k.name = name;
++	k.start = start;
++	k.hi = hi;
++	k.hash = mate_key_hash(name, start, hi);
++	return k;
++}
++
++class MateReadHash : public GHashMap<MateKey, int, MateKeyHash, MateKeyEq> {
++public:
++	MateReadHash(): GHashMap<MateKey, int, MateKeyHash, MateKeyEq>(false) {}
++
++	const int* FindMate(const char* name, int start, int hi) {
++		MateKey k = make_mate_key(name, start, hi);
++		return this->Find(k);
++	}
++
++	int AddMate(const char* name, int start, int hi, int val) {
++		MateKey k = make_mate_key(name, start, hi);
++		int absent = -1;
++		uint64_t i = this->put(k, &absent);
++		if (absent==1) {
++			this->key(i).name = Gstrdup(name);
++			this->value(i) = val;
++			return (int)i;
++		}
++		return -1;
++	}
++
++	int RemoveMate(const char* name, int start, int hi) {
++		MateKey k = make_mate_key(name, start, hi);
++		uint64_t i = this->get(k);
++		if (i != this->end()) {
++			char* s = (char*)this->key(i).name;
++			GFREE(s);
++			this->key(i).name = NULL;
++			this->del(i);
++			return (int)i;
++		}
++		return -1;
++	}
++
++	void Clear() {
++		uint64_t nb = this->n_buckets();
++		for (uint64_t i = 0; i != nb; ++i) {
++			if (!this->_used(i)) continue;
++			char* s = (char*)this->key(i).name;
++			GFREE(s);
++			this->key(i).name = NULL;
++		}
++		this->clear();
++	}
++
++	~MateReadHash() { Clear(); }
++};
++
+ void processRead(int currentstart, int currentend, BundleData& bdata,
+-		 GHash<int>& hashread, GReadAlnData& alndata,bool ovlpguide);
++		 MateReadHash& hashread, GReadAlnData& alndata,bool ovlpguide);
+ 		 //GSamRecord& brec, char strand, int nh, int hi);
+diff -ruN a/gclib/GSam.cpp b/gclib/GSam.cpp
+--- a/gclib/GSam.cpp	2026-09-09 20:18:05.213989947 +0000
++++ b/gclib/GSam.cpp	2026-09-09 21:20:12.334423607 +0000
+@@ -211,6 +211,9 @@
+ 	bool ins=false;
+ 	uint del=0;
+ 	uint prevdel=0;
++	// H11: upper-bound reserve (n_cigar) to avoid GVec Grow during parse
++	if ((int)c->n_cigar > exons.Capacity()) exons.setCapacity((int)c->n_cigar);
++	if ((int)c->n_cigar > juncsdel.Capacity()) juncsdel.setCapacity((int)c->n_cigar);
+ 
+ 	for (uint i = 0; i < c->n_cigar; ++i) {
+ 		unsigned char op = _cigOp(cigar[i]);
+@@ -296,18 +299,91 @@
+ 
+  int GSamRecord::remove_tag(const char tag[2]) {
+    uint8_t* p=bam_aux_get(this->b, tag);
+-   if (p!=NULL) return bam_aux_del(this->b, p);
++   if (p!=NULL) {
++     invalidate_aux_cache();
++     return bam_aux_del(this->b, p);
++   }
+    return 0;
+  }
+ 
++ // H12: inline aux skip (no bam_aux_next/errno); early-exit once core tags seen.
++ // Core set used on every short-read hot path: NH, NM, XS|ts (HI/YK/YC/MD/ZS optional).
++ static inline uint8_t* aux_skip_inline(uint8_t* s, uint8_t* end) {
++   if (s >= end) return end;
++   int size;
++   switch (*s++) {
++     case 'A': case 'C': case 'c': size=1; break;
++     case 'S': case 's': size=2; break;
++     case 'I': case 'i': case 'f': size=4; break;
++     case 'd': size=8; break;
++     case 'Z': case 'H':
++       while (s < end && *s) ++s;
++       return s < end ? s + 1 : end;
++     case 'B': {
++       if (end - s < 5) return NULL;
++       int sz = 0;
++       switch (*s++) {
++         case 'C': case 'c': sz=1; break;
++         case 'S': case 's': sz=2; break;
++         case 'I': case 'i': case 'f': sz=4; break;
++         default: return NULL;
++       }
++       uint32_t n = (uint32_t)s[0] | ((uint32_t)s[1]<<8) | ((uint32_t)s[2]<<16) | ((uint32_t)s[3]<<24);
++       s += 4;
++       if (end - s < (long)(sz * n)) return NULL;
++       return s + sz * n;
++     }
++     default: return NULL;
++   }
++   if (end - s < size) return NULL;
++   return s + size;
++ }
++
++ void GSamRecord::ensure_aux_cache() {
++   if (auxc.ready) return;
++   invalidate_aux_cache();
++   auxc.ready=true;
++   if (b==NULL) return;
++   uint8_t* s = bam_get_aux(b);
++   uint8_t* end = b->data + b->l_data;
++   bool got_strand=false, got_NH=false, got_NM=false;
++   while (end - s >= 3) {
++     const char t0 = (char)s[0];
++     const char t1 = (char)s[1];
++     uint8_t* val = s + 2;
++     if (t0=='N' && t1=='H') { auxc.has_NH=true; auxc.NH=bam_aux2i(val); got_NH=true; }
++     else if (t0=='H' && t1=='I') { auxc.has_HI=true; auxc.HI=bam_aux2i(val); }
++     else if (t0=='N' && t1=='M') { auxc.has_NM=true; auxc.NM=bam_aux2i(val); got_NM=true; }
++     else if (t0=='n' && t1=='M') { auxc.has_nM=true; auxc.nM=bam_aux2i(val); }
++     else if (t0=='Y' && t1=='C') { auxc.has_YC=true; auxc.YC=bam_aux2i(val); }
++     else if (t0=='Y' && t1=='K') { auxc.has_YK=true; auxc.YK=bam_aux2f(val); }
++     else if (t0=='X' && t1=='S') {
++       char type=*val;
++       if (type=='A' || type=='Z') { auxc.has_XS=true; auxc.XS=*(char*)(val+1); got_strand=true; }
++     }
++     else if (t0=='t' && t1=='s') {
++       char type=*val;
++       if (type=='A' || type=='Z') { auxc.has_ts=true; auxc.ts=*(char*)(val+1); got_strand=true; }
++     }
++     else if (t0=='M' && t1=='D' && *val=='Z') { auxc.has_MD=true; auxc.MD=bam_aux2Z(val); }
++     else if (t0=='Z' && t1=='S' && *val=='Z') { auxc.has_ZS=true; auxc.ZS=bam_aux2Z(val); }
++     s = aux_skip_inline(val, end);
++     if (!s) break;
++   }
++   (void)got_strand; (void)got_NH; (void)got_NM;
++ }
+ 
+  char GSamRecord::tag_char(const char tag[2]) { //retrieve tag data as single char
++   // uncommon on hot path; keep direct lookup
+    uint8_t* s=find_tag(tag);
+    if (s) return ( bam_aux2A(s) );
+    return 0;
+  }
+ 
+  char GSamRecord::tag_char1(const char tag[2]) { //just the first char from Z type tags
++   ensure_aux_cache();
++   if (tag[0]=='X' && tag[1]=='S') return auxc.has_XS ? auxc.XS : 0;
++   if (tag[0]=='t' && tag[1]=='s') return auxc.has_ts ? auxc.ts : 0;
+ 	uint8_t* s=bam_aux_get(this->b, tag);
+ 	if (s==NULL) return 0;
+  	int type;
+@@ -318,28 +394,40 @@
+  }
+ 
+  int64_t GSamRecord::tag_int(const char tag[2], int nfval) { //get the numeric value of tag
++   ensure_aux_cache();
++   if (tag[0]=='N' && tag[1]=='H') return auxc.has_NH ? auxc.NH : nfval;
++   if (tag[0]=='H' && tag[1]=='I') return auxc.has_HI ? auxc.HI : nfval;
++   if (tag[0]=='N' && tag[1]=='M') return auxc.has_NM ? auxc.NM : nfval;
++   if (tag[0]=='n' && tag[1]=='M') return auxc.has_nM ? auxc.nM : nfval;
++   if (tag[0]=='Y' && tag[1]=='C') return auxc.has_YC ? auxc.YC : nfval;
+    uint8_t *s=find_tag(tag);
+    if (s) return ( bam_aux2i(s) );
+    return nfval;
+  }
+ 
+  double GSamRecord::tag_float(const char tag[2]) { //get the float value of tag
++   ensure_aux_cache();
++   if (tag[0]=='Y' && tag[1]=='K') return auxc.has_YK ? auxc.YK : 0;
+     uint8_t *s=bam_aux_get(this->b, tag);;
+     if (s) return ( bam_aux2f(s) );
+     return 0;
+  }
+ 
+  char* GSamRecord::tag_str(const char tag[2]) { //return string value for a tag
++   ensure_aux_cache();
++   if (tag[0]=='M' && tag[1]=='D') return auxc.has_MD ? auxc.MD : NULL;
++   if (tag[0]=='Z' && tag[1]=='S') return auxc.has_ZS ? auxc.ZS : NULL;
+    uint8_t *s=find_tag(tag);
+    if (s) return ( bam_aux2Z(s) );
+    return NULL;
+  }
+ 
+  char GSamRecord::spliceStrand() { // '+', '-' from the XS tag, or 0 if no XS tag
+-   char c=tag_char1("XS");
++   ensure_aux_cache();
++   char c = auxc.has_XS ? auxc.XS : 0;
+    if (c==0) {
+     //try minimap2's "ts" tag
+-    char m=tag_char1("ts");
++    char m = auxc.has_ts ? auxc.ts : 0;
+     if (m=='+' || m=='-') {
+        if ((this->b->core.flag & BAM_FREVERSE) != 0) c=((m=='+') ? '-' : '+');
+          else c=m;
+diff -ruN a/gclib/GSam.h b/gclib/GSam.h
+--- a/gclib/GSam.h	2026-09-09 20:18:05.213989947 +0000
++++ b/gclib/GSam.h	2026-09-09 21:17:56.574196578 +0000
+@@ -47,6 +47,27 @@
+    int clipR=0;
+    int mapped_len=0; //sum of exon lengths
+    int uval=0; //user value (e.g. file index)
++   // One-pass typed aux-tag cache (lazy; invalidated on clear/init/mutate)
++   struct AuxCache {
++      bool ready=false;
++      bool has_NH=false, has_HI=false, has_NM=false, has_nM=false, has_YC=false, has_YK=false;
++      bool has_XS=false, has_ts=false, has_MD=false, has_ZS=false;
++      int64_t NH=0, HI=0, NM=0, nM=0, YC=0;
++      double YK=0;
++      char XS=0; // first char of XS tag (A or Z)
++      char ts=0;
++      char* MD=NULL; // points into bam aux; not owned
++      char* ZS=NULL;
++   } auxc;
++   void invalidate_aux_cache() {
++      auxc.ready=false;
++      auxc.has_NH=auxc.has_HI=auxc.has_NM=auxc.has_nM=auxc.has_YC=auxc.has_YK=false;
++      auxc.has_XS=auxc.has_ts=auxc.has_MD=auxc.has_ZS=false;
++      auxc.NH=auxc.HI=auxc.NM=auxc.nM=auxc.YC=0;
++      auxc.YK=0; auxc.XS=0; auxc.ts=0;
++      auxc.MD=NULL; auxc.ZS=NULL;
++   }
++   void ensure_aux_cache();
+    //FIXME: DEBUG only fields
+ #ifdef _DEBUG
+    char* _cigar=NULL;
+@@ -94,6 +115,7 @@
+ 	      //makes a new copy of the bam1_t record etc.
+ 	      b=bam_dup1(r.b);
+ 	      novel=true; //will also free b when destroyed
++	      invalidate_aux_cache(); // bam_dup1: aux pointers must not be reused
+ #ifdef _DEBUG
+ 	      _cigar=Gstrdup(r._cigar);
+ 	      _read=r._read;
+@@ -115,6 +137,7 @@
+       clipL = r.clipL;
+       clipR = r.clipR;
+       mapped_len=r.mapped_len;
++      invalidate_aux_cache(); // bam_dup1: aux pointers must not be reused
+ #ifdef _DEBUG
+       _cigar=Gstrdup(r._cigar);
+       _read=r._read;
+@@ -130,11 +153,13 @@
+            //novel=false;
+         }
+         b=NULL;
+-        exons.Clear();
+-        juncsdel.Clear();
++        // H11: retain exon/junc vector capacity across record reuse
++        exons.setCount(0);
++        juncsdel.setCount(0);
+         mapped_len=0;
+         b_hdr=NULL;
+         iflags=0;
++        invalidate_aux_cache();
+ #ifdef _DEBUG
+         GFREE(_cigar);
+         _read=NULL;
+@@ -143,6 +168,8 @@
+ 
+     ~GSamRecord() {
+        clear();
++       exons.Clear();
++       juncsdel.Clear();
+     }
+ #ifdef _DEBUG
+     void print_cigar(bam1_t *al){
+@@ -289,12 +316,14 @@
+     void add_aux(const char* str); //adds one aux field in plain SAM text format (e.g. "NM:i:1")
+     int  add_aux(const char tag[2], char atype, int len, uint8_t *data) {
+       //IMPORTANT:  strings (Z,H) should include the terminal \0
++     invalidate_aux_cache();
+      return bam_aux_append(b, tag, atype, len, data);
+     }
+ 
+     int add_tag(const char tag[2], char atype, int len, uint8_t *data) {
+       //same with add_aux()
+       //IMPORTANT:  strings type (Z,H) should include the terminal \0
++      invalidate_aux_cache();
+       return bam_aux_append(b, tag, atype, len, data);
+     }
+ 
+diff -ruN a/rlink.cpp b/rlink.cpp
+--- a/rlink.cpp	2026-09-09 20:18:05.241989984 +0000
++++ b/rlink.cpp	2026-09-09 20:46:47.135894491 +0000
+@@ -14,7 +14,9 @@
+ 
+ //extern GffNames* gseqNames;
+ extern FILE *c_out;         // file handle for the input transcripts that are fully covered by reads
++#ifndef NOTHREADS
+ extern GFastMutex printCovMutex;
++#endif
+ 
+ extern bool trim;
+ extern bool eonly;
+@@ -54,9 +56,6 @@
+ 
+ extern bool havePtFeatures; // if there is feature data to use
+ 
+-static GStr _id("", 256); //to prevent repeated reallocation for each parsed read
+-//not thread safe -- to only be used in processRead() as long as that's the unique producer
+-
+ // Stable coordinate comparator helper: preserve pre-sort order on ties.
+ // We only compare start, then end; if equal, we fall back to the original
+ // position recorded right before sorting.
+@@ -657,7 +656,7 @@
+ 
+ 
+ void processRead(int currentstart, int currentend, BundleData& bdata,
+-		 GHash<int>& hashread,  GReadAlnData& alndata,bool ovlpguide) { // some false positives should be eliminated here in order to break the bundle
++		 MateReadHash& hashread,  GReadAlnData& alndata,bool ovlpguide) { // some false positives should be eliminated here in order to break the bundle
+ 	GSamRecord& brec=*(alndata.brec);			   // bam record
+ 	if((longreads || (mixedMode && brec.uval)) && ((brec.flags() & BAM_FSECONDARY) || (brec.flags() & BAM_FSUPPLEMENTARY))) return;
+ 	GList<CReadAln>& readlist = bdata.readlist;    // list of reads gathered so far
+@@ -936,13 +935,10 @@
+ 	//if (brec.isProperlyPaired()) {  //only consider mate pairing data if mates  are properly paired
+ 		int pairstart=brec.mate_start();
+ 		if (currentstart<=pairstart) { // if pairstart is in a previous bundle I don't care about it
+-			//GStr readname();
+-			//GStr id(brec.name(), 16); // init id with readname
+-			_id.assign(brec.name()); //assign can be forced to prevent shrinking of the string
++			const char* rname=brec.name();
+ 			if(pairstart<=readstart) { // if I've seen the pair already <- I might not have seen it yet because the pair starts at the same place
+-				_id+='-';_id+=pairstart;
+-				_id+=".=";_id+=hi; // (!) this suffix actually speeds up the hash by improving distribution!
+-				const int* np=hashread[_id.chars()];
++				// Structured key identity matches former "name-pairstart.=hi"
++				const int* np=hashread.FindMate(rname, pairstart, hi);
+ 				if(np) { // the pair was stored --> why wouldn't it be? : only in the case that the pair starts at the same position
+ 					if(readlist[*np]->nh>nh && !nomulti) rdcount=float(1)/readlist[*np]->nh;
+ 					bool notfound=true;
+@@ -969,13 +965,12 @@
+ 						readlist[n]->pair_idx.Add(i);
+ 						readlist[n]->pair_count.Add(rdcount);
+ 					}
+-					hashread.Remove(_id.chars());
++					hashread.RemoveMate(rname, pairstart, hi);
+ 				}
+ 			}
+ 			else { // I might still see the pair in the future
+-				_id+='-';_id+=readstart; // this is the correct way
+-				_id+=".=";_id+=hi;
+-				hashread.Add(_id.chars(), n);
++				// Structured key identity matches former "name-readstart.=hi"
++				hashread.AddMate(rname, readstart, hi, n);
+ 			}
+ 		}
+ 	} //<-- if mate is mapped on the same chromosome
+@@ -12359,9 +12354,13 @@
+ 				GStr guidecov;
+ 				guidecov.appendfmt("%.2f",guideabundance);
+ 				guides[guidetrf[g].g]->addAttr("coverage",guidecov.chars());
++#ifndef NOTHREADS
+ 				printCovMutex.lock();
++#endif
+ 				guides[guidetrf[g].g]->printTranscriptGff(c_out);
++#ifndef NOTHREADS
+ 				printCovMutex.unlock();
++#endif
+ 			}
+ 		}
+ 	}
+@@ -15531,9 +15530,13 @@
+     							GStr guidecov;
+     							guidecov.appendfmt("%.2f",gcov);
+     							guides[g]->addAttr("coverage",guidecov.chars());
++#ifndef NOTHREADS
+     							printCovMutex.lock();
++#endif
+     							guides[g]->printTranscriptGff(c_out);
++#ifndef NOTHREADS
+     							printCovMutex.unlock();
++#endif
+     						}
+     						GSeg exon(guides[g]->start, guides[g]->end);
+     						p->exons.Add(exon);
+diff -ruN a/stringtie.cpp b/stringtie.cpp
+--- a/stringtie.cpp	2026-09-09 20:18:05.241989984 +0000
++++ b/stringtie.cpp	2026-09-09 21:17:56.654196720 +0000
+@@ -434,7 +434,7 @@
+  // --- input processing
+ 
+ 
+- GHash<int> hashread;      //read_name:pos:hit_index => readlist index
++ MateReadHash hashread;   // structured (name,start,hi) => readlist index
+  GList<GffObj>* guides=NULL; //list of transcripts on a specific reference
+  GList<GPtFeature>* refptfs=NULL; //list of point-features on a specific reference
+  int currentstart=0, currentend=0;
+@@ -820,7 +820,9 @@
+  } //for each read alignment
+ 
+  //cleaning up
+- delete brec;
++ // H11: brec may be TInputFiles::solo (reused) or already freed when next() hit EOF;
++ // TInputFiles destructor / stop owns lifetime — do not delete here.
++ brec=NULL;
+ 
+  bamreader.stop(); //close all BAM files
+ 
+diff -ruN a/tmerge.cpp b/tmerge.cpp
+--- a/tmerge.cpp	2026-09-09 20:18:05.241989984 +0000
++++ b/tmerge.cpp	2026-09-09 21:17:56.634196684 +0000
+@@ -148,6 +148,23 @@
+ 	//must free old current record first
+ 	delete crec;
+ 	crec=NULL;
++	// Single-input fast path: bypass priority-queue merge bookkeeping.
++	// Multi-file path below is unchanged.
++	if (readers.Count()==1) {
++		GSamRecord* r=NULL;
++		if (recs.Count()>0) {
++			// Consume the record preloaded by start() without re-queuing.
++			crec=recs.Pop();
++			r=crec->brec;
++		} else {
++			// H11: reuse one GSamRecord + bam1_t (GSamReader::b_next) — no per-read new/delete
++			if (!solo) solo=new GSamRecord();
++			if (!readers[0]->next(*solo)) return NULL;
++			r=solo;
++		}
++		r->uval=0; // single-file index
++		return r;
++	}
+     if (recs.Count()>0) {
+     	crec=recs.Pop();//lowest coordinate
+     	GSamRecord* rnext=readers[crec->fidx]->next();
+diff -ruN a/tmerge.h b/tmerge.h
+--- a/tmerge.h	2026-09-09 20:18:05.241989984 +0000
++++ b/tmerge.h	2026-09-09 21:17:56.614196649 +0000
+@@ -48,14 +48,16 @@
+ struct TInputFiles {
+  protected:
+ 	TInputRecord* crec;
++	GSamRecord* solo; // H11: reused record for single-BAM path (not owned by TInputRecord)
+ 	GStr convert2BAM(GStr& gtf, int idx);
+  public:
+ 	GPVec<GSamReader> readers;
+ 	GVec<GStr> files; //same order
+ 	GVec<GStr> tmpfiles; //all the temp files created by this
+ 	GList<TInputRecord> recs; //next record for each
+-	TInputFiles():crec(NULL), readers(true), files(), tmpfiles(),
++	TInputFiles():crec(NULL), solo(NULL), readers(true), files(), tmpfiles(),
+ 			recs(true, true, true) { }
++	~TInputFiles() { delete solo; solo=NULL; }
+ 	void Add(const char* fn);
+ 	int count() { return files.Count(); }
+ 	int start(); //open all files, load 1 record from each

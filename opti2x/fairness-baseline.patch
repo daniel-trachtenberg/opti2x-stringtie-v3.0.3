@@ -1,0 +1,40 @@
+--- a/rlink.cpp
++++ b/rlink.cpp
+@@ -14,7 +14,9 @@
+ 
+ //extern GffNames* gseqNames;
+ extern FILE *c_out;         // file handle for the input transcripts that are fully covered by reads
++#ifndef NOTHREADS
+ extern GFastMutex printCovMutex;
++#endif
+ 
+ extern bool trim;
+ extern bool eonly;
+@@ -12359,9 +12361,13 @@
+ 				GStr guidecov;
+ 				guidecov.appendfmt("%.2f",guideabundance);
+ 				guides[guidetrf[g].g]->addAttr("coverage",guidecov.chars());
++#ifndef NOTHREADS
+ 				printCovMutex.lock();
++#endif
+ 				guides[guidetrf[g].g]->printTranscriptGff(c_out);
++#ifndef NOTHREADS
+ 				printCovMutex.unlock();
++#endif
+ 			}
+ 		}
+ 	}
+@@ -15531,9 +15537,13 @@
+     							GStr guidecov;
+     							guidecov.appendfmt("%.2f",gcov);
+     							guides[g]->addAttr("coverage",guidecov.chars());
++#ifndef NOTHREADS
+     							printCovMutex.lock();
++#endif
+     							guides[g]->printTranscriptGff(c_out);
++#ifndef NOTHREADS
+     							printCovMutex.unlock();
++#endif
+     						}
+     						GSeg exon(guides[g]->start, guides[g]->end);
+     						p->exons.Add(exon);

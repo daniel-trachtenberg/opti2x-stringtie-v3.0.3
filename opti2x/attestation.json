@@ -1,0 +1,34 @@
+{
+  "schema": "opti2x.attestation.v0",
+  "status": "QUALIFIED",
+  "contract_id": "stringtie-v3.0.3-serial-shortread-fixture-v2",
+  "immutable_digests": {
+    "certification_json_canonical_sha256": "b4b342c21137a5d10733671689d909393b2308f3ccc03484de8780fb83b8fa95",
+    "candidate_binary_sha256": "d545ffe246c5231447b20acb2a83192abed536c42d77dccfa61f9f684b236cc7",
+    "optimized_patch_sha256": "1d74b48a46e33e980c1bc229f3edeb3733b6da6c92c58d7ab4e8d62fd3ab3fb3",
+    "fairness_baseline_patch_sha256": "a51937fe305cc9b5ff16b7b6323edc68b58ac0c59ce806f2ade8463070ceee06",
+    "optimized_vs_patched_baseline_patch_sha256": "e46bc48a779df4d3e94a7810eebc54088e8da711c37f376ab5ce3818fb08fb6e",
+    "input_bam_sha256": "a1e37c767d0a4d27acf6446b3ea4727ef2fb9cc927f35cdf84990f48651e5d68",
+    "oracle_strip_sha256": "f0a9544954c38a273012837e7689ed2c6fd1c074b21edc86858505c6a20af9ef",
+    "pin_commit": "3436ad6dfd0ffc806a94086cf747ac6ff2b0dc19",
+    "contract_yaml_sha256": "8a550b3d0f3b54c8c75ef80626cf61bc3ed5ac6b3ffb07e2b77785ae34fe785d",
+    "baseline_binary_sha256": "d2f4af1668e58b6f7f1f431a87343c1bff8a728b449896d781c5429621e9c2b0"
+  },
+  "performance_quoted": {
+    "median_speedup_from_medians": 2.519008571436673,
+    "lower_95_speedup": 2.490761262971848,
+    "n": 30
+  },
+  "limitations_digest": [
+    "cgroup_pids_max_unenforceable",
+    "nlwp_1_observed_only",
+    "fixture_scoped_not_package_wide",
+    "h14_rejected_excluded",
+    "agent_attested_this_host"
+  ],
+  "evaluator_note": "Agent-attested QUALIFIED packaging on this host for fixture-scoped contract stringtie-v3.0.3-serial-shortread-fixture-v2. Evidence: N=30 paired timing (median≈2.519×, lower_95≈2.491×), oracle strip×3, ASAN oracle, CRC retained, adversarial review PASS. Explicit gap: cgroup pids.max unenforceable here; NLWP=1 observed only. H14 (BGZF CRC skip) rejected and not included. Do not market as package-wide 2×.",
+  "attested_at_utc": "2026-09-09T21:33:44Z",
+  "attested_at_pt": "2026-09-09 2:33 PM PT",
+  "attestor": "opti2x-report-packaging-agent",
+  "attestation_document_sha256": "ae8f1a6e9800a2a92b760d825fdb52a71fa5035908c01be93896af5624f9bcd5"
+}

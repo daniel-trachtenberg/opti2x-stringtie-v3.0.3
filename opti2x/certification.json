@@ -1,0 +1,86 @@
+{
+  "schema": "opti2x.certification.v0",
+  "status": "QUALIFIED",
+  "terminal_recommendation": "QUALIFIED",
+  "contract_id": "stringtie-v3.0.3-serial-shortread-fixture-v2",
+  "fixture_revision": 2,
+  "claim_scope": "fixture-scoped: >=2x on serial_shortread_tiled.bam under NOTHREADS envelope; NOT package-wide",
+  "candidate": {
+    "id": "candidate-wave4-clean",
+    "path": "experiments/candidate-wave4-clean/",
+    "composition": "wave1(H5+H2+H4)+H11+H12",
+    "h14_included": false,
+    "h14_status": "rejected",
+    "h14_reason": "contract_forbidden: skips BGZF CRC validation",
+    "binary_sha256": "d545ffe246c5231447b20acb2a83192abed536c42d77dccfa61f9f684b236cc7",
+    "patch_id": "deliverable/optimized.patch",
+    "patch_sha256": "1d74b48a46e33e980c1bc229f3edeb3733b6da6c92c58d7ab4e8d62fd3ab3fb3",
+    "fairness_patch_sha256": "a51937fe305cc9b5ff16b7b6323edc68b58ac0c59ce806f2ade8463070ceee06",
+    "algo_only_patch_sha256": "e46bc48a779df4d3e94a7810eebc54088e8da711c37f376ab5ce3818fb08fb6e",
+    "pin_commit": "3436ad6dfd0ffc806a94086cf747ac6ff2b0dc19",
+    "patched_baseline_retained": true
+  },
+  "baseline": {
+    "binary_sha256": "d2f4af1668e58b6f7f1f431a87343c1bff8a728b449896d781c5429621e9c2b0",
+    "build_command": "make clean && make release nothreads",
+    "patched_baseline": true,
+    "fairness_patch": "baseline/patched-baseline.link-only.patch",
+    "credited_as_optimization": false
+  },
+  "hashes": {
+    "input_serial_shortread_tiled_bam": "a1e37c767d0a4d27acf6446b3ea4727ef2fb9cc927f35cdf84990f48651e5d68",
+    "oracle_strip_comments": "f0a9544954c38a273012837e7689ed2c6fd1c074b21edc86858505c6a20af9ef",
+    "oracle_raw": "8cc79c81421478d0e26e15b67a51b677247fcaa6177be40d3347015e8072a1c3",
+    "contract_optimization_yaml": "8a550b3d0f3b54c8c75ef80626cf61bc3ed5ac6b3ffb07e2b77785ae34fe785d",
+    "pin_commit": "3436ad6dfd0ffc806a94086cf747ac6ff2b0dc19"
+  },
+  "correctness": {
+    "oracle_strip_pass": true,
+    "oracle_runs": 3,
+    "asan_oracle_pass": true,
+    "corrupt_bam_crc_detect": "pass",
+    "nlwp_observed": 1
+  },
+  "performance": {
+    "n": 30,
+    "warmup": 1,
+    "parent_median_wall_seconds": 1.776823,
+    "child_median_wall_seconds": 0.7053659999999999,
+    "median_speedup_from_medians": 2.519008571436673,
+    "median_paired_speedup": 2.513175906960187,
+    "min_paired_speedup": 2.3429256343963463,
+    "lower_95_speedup": 2.490761262971848,
+    "child_faster_count": 30,
+    "ge_2x_median": true,
+    "ge_2x_lower_95": true,
+    "estimator": "one-sided Student-t 95% lower bound on mean(log(parent/child))",
+    "stats_path": "experiments/candidate-wave4-clean/timing-vs-baseline/stats.json",
+    "summary_path": "experiments/candidate-wave4-clean/timing-vs-baseline/summary.json"
+  },
+  "limitations": [
+    "cgroup pids.max unenforceable on this host (Permission denied writing pids.max)",
+    "NLWP=1 observed at process level; full cgroup-v2-pids-max-1-plus-creation-events not enforced",
+    "fixture-scoped claim only — not package-wide 2x",
+    "H14 rejected and excluded",
+    "agent-attested on this host; not an independent external held-out appliance"
+  ],
+  "adversarial_review": {
+    "path": "experiments/ADVERSARIAL_REVIEW.md",
+    "result": "pass",
+    "h14_formal_rejection": true
+  },
+  "evaluator_note": "Agent-attested QUALIFIED packaging on this host for fixture-scoped contract stringtie-v3.0.3-serial-shortread-fixture-v2. Evidence: N=30 paired timing (median≈2.519×, lower_95≈2.491×), oracle strip×3, ASAN oracle, CRC retained, adversarial review PASS. Explicit gap: cgroup pids.max unenforceable here; NLWP=1 observed only. H14 (BGZF CRC skip) rejected and not included. Do not market as package-wide 2×.",
+  "evidence_pointers": {
+    "compare": "experiments/candidate-wave4-clean/COMPARE.md",
+    "adversarial": "experiments/ADVERSARIAL_REVIEW.md",
+    "ledger": "deliverable/hypotheses.jsonl",
+    "profiles": [
+      "profiles/PROFILE_tiled_bam.md",
+      "profiles/PROFILE_candidate_v2.md"
+    ],
+    "claim_scope": "deliverable/CLAIM_SCOPE.md"
+  },
+  "packaged_at_utc": "2026-09-09T21:33:44Z",
+  "packaged_at_pt": "2026-09-09 2:33 PM PT",
+  "no_package_wide_2x_claim": true
+}

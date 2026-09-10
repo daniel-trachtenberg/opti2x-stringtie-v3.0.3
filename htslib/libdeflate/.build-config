@@ -1,0 +1,9 @@
+USE_SHARED_LIB=
+DECOMPRESSION_ONLY=
+DISABLE_GZIP=
+DISABLE_ZLIB=
+FREESTANDING=
+CC=gcc
+CFLAGS=-O2 -fomit-frame-pointer -std=c99 -I. -Wall -Wundef -Wpedantic -Wdeclaration-after-statement -Wmissing-prototypes -Wstrict-prototypes -Wvla -Wimplicit-fallthrough 
+CPPFLAGS=
+LDFLAGS=
